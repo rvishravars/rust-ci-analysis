@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .config import load_config_from_env
+from .db import DatabaseWriter
 from .repo_discovery import discover_repositories
 from .repo_data import collect_repo_raw_data, load_repo_list
 
@@ -40,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config_from_env()
 
+    db_writer = DatabaseWriter.from_config(cfg)
+
     print("[collector] Discovering repositories…", flush=True)
     repos_path = discover_repositories(cfg, overwrite=args.overwrite_repos_list)
     print(f"[collector] Repository list written to: {repos_path}", flush=True)
@@ -59,12 +62,28 @@ def main(argv: list[str] | None = None) -> int:
             / str(name)
         )
 
-        if args.resume and (repo_dir / "repo.json").exists():
-            print(f"[collector] Skipping existing repo: {owner}/{name}", flush=True)
-            continue
+        full_name = repo.get("full_name") or f"{owner}/{name}"
+
+        if args.resume:
+            # Prefer DB-backed resume tracking when available; otherwise
+            # fall back to the original filesystem-based heuristic.
+            if db_writer is not None and full_name:
+                if db_writer.is_repo_completed(full_name):
+                    print(
+                        f"[collector] Skipping completed repo (db): {owner}/{name}",
+                        flush=True,
+                    )
+                    continue
+            elif (repo_dir / "repo.json").exists():
+                print(f"[collector] Skipping existing repo: {owner}/{name}", flush=True)
+                continue
 
         print(f"[collector] Collecting: {owner}/{name}", flush=True)
-        collect_repo_raw_data(cfg, repo)
+
+        collect_repo_raw_data(cfg, repo, db=db_writer)
+
+        if db_writer is not None:
+            db_writer.mark_repo_completed(repo)
         count += 1
 
         if args.limit is not None and count >= args.limit:

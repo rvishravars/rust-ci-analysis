@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+import requests
+
 from .config import AppConfig
+from .db import DatabaseWriter
 from .github_client import GitHubClient
 
 
@@ -55,7 +58,21 @@ def _iter_issues(client: GitHubClient, full_name: str) -> Iterable[Dict[str, Any
 
     while True:
         params = {"per_page": per_page, "page": page, "state": "all"}
-        response = client.get(path, params=params)
+        try:
+            response = client.get(path, params=params)
+        except requests.HTTPError as exc:  # type: ignore[attribute-defined-outside-init]
+            status_code = getattr(exc.response, "status_code", None)
+            # For very large repositories GitHub may return 422 for
+            # out-of-range pages. Treat this as a natural end of the
+            # pagination once we've successfully read at least one page.
+            if status_code == 422 and page > 1:
+                break
+            # For transient server-side errors, stop pagination for
+            # this repository once we've successfully fetched at
+            # least one page instead of failing the whole run.
+            if status_code is not None and 500 <= status_code < 600 and page > 1:
+                break
+            raise
         page_items = response.json() or []
         if not page_items:
             break
@@ -78,7 +95,16 @@ def _iter_workflow_runs(client: GitHubClient, full_name: str) -> Iterable[Dict[s
 
     while True:
         params = {"per_page": per_page, "page": page}
-        response = client.get(path, params=params)
+        try:
+            response = client.get(path, params=params)
+        except requests.HTTPError as exc:  # type: ignore[attribute-defined-outside-init]
+            status_code = getattr(exc.response, "status_code", None)
+            # When GitHub returns repeated 5xx responses for very
+            # deep pagination, treat it as the natural end of the
+            # available data once we've read at least one page.
+            if status_code is not None and 500 <= status_code < 600 and page > 1:
+                break
+            raise
         payload = response.json() or {}
         runs = payload.get("workflow_runs") or []
         if not runs:
@@ -97,6 +123,7 @@ def collect_repo_raw_data(
     config: AppConfig,
     repo_record: Dict[str, Any],
     client: Optional[GitHubClient] = None,
+    db: Optional[DatabaseWriter] = None,
 ) -> Path:
     """Download raw metadata and CI-related data for a single repository.
 
@@ -116,28 +143,53 @@ def collect_repo_raw_data(
 
     repo_dir = _ensure_repo_dir(config, owner, name)
 
-    # Persist the basic repository record as-is.
+    # Persist the basic repository record as-is for local inspection.
     _write_json(repo_dir / "repo.json", repo_record)
+
+    # When a database writer is configured, ensure the repo exists there and
+    # clear any previous data so we can safely re-run collection.
+    repo_db_id: Optional[int] = None
+    if db is not None:
+        repo_db_id = db.mark_repo_started(repo_record)
+        db.clear_repo_data(repo_db_id)
 
     # Languages breakdown.
     languages_resp = client.get(f"/repos/{full_name}/languages")
-    _write_json(repo_dir / "languages.json", languages_resp.json())
+    languages_data = languages_resp.json()
+    _write_json(repo_dir / "languages.json", languages_data)
 
     # Commit history (for later velocity and CI-adoption analysis).
-    _write_jsonl(repo_dir / "commits.jsonl", _iter_commits(client, full_name))
+    if db is not None and repo_db_id is not None:
+        for commit in _iter_commits(client, full_name):
+            db.insert_commit(repo_db_id, commit)
+    else:
+        _write_jsonl(repo_dir / "commits.jsonl", _iter_commits(client, full_name))
 
     # Issues and pull requests (for later bug/defect metrics).
-    _write_jsonl(repo_dir / "issues.jsonl", _iter_issues(client, full_name))
+    if db is not None and repo_db_id is not None:
+        for issue in _iter_issues(client, full_name):
+            db.insert_issue(repo_db_id, issue)
+    else:
+        _write_jsonl(repo_dir / "issues.jsonl", _iter_issues(client, full_name))
 
     # CI configuration: GitHub Actions workflows.
     workflows_resp = client.get(f"/repos/{full_name}/actions/workflows")
-    _write_json(repo_dir / "workflows.json", workflows_resp.json())
+    workflows_data = workflows_resp.json()
+    _write_json(repo_dir / "workflows.json", workflows_data)
+
+    if db is not None and repo_db_id is not None:
+        for wf in workflows_data.get("workflows") or []:
+            db.insert_workflow(repo_db_id, wf)
 
     # CI execution metadata: workflow runs.
-    _write_jsonl(
-        repo_dir / "workflow_runs.jsonl",
-        _iter_workflow_runs(client, full_name),
-    )
+    if db is not None and repo_db_id is not None:
+        for run in _iter_workflow_runs(client, full_name):
+            db.insert_workflow_run(repo_db_id, run)
+    else:
+        _write_jsonl(
+            repo_dir / "workflow_runs.jsonl",
+            _iter_workflow_runs(client, full_name),
+        )
 
     return repo_dir
 

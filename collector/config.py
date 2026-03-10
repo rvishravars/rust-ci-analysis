@@ -34,6 +34,17 @@ class StorageConfig:
 
 
 @dataclass
+class DatabaseConfig:
+    """Database configuration for optional Postgres storage.
+
+    When configured, the collector will persist raw GitHub data and
+    per-repository collection state into a local Postgres instance.
+    """
+
+    dsn: str
+
+
+@dataclass
 class AppConfig:
     """Top-level configuration for the Rust CI data collector.
 
@@ -43,6 +54,7 @@ class AppConfig:
     github_token: str
     search: SearchParams
     storage: StorageConfig
+    db: Optional[DatabaseConfig] = None
 
 
 def _get_bool_env(name: str, default: bool = False) -> bool:
@@ -65,7 +77,8 @@ def load_config_from_env() -> AppConfig:
       - RUST_CI_POLYGLOT_ONLY (bool, optional)
       - RUST_CI_DATA_DIR (path, optional; default: ./data)
       - RUST_CI_REPOS_LIST (path, optional; default: <DATA_DIR>/repos.jsonl)
-      - RUST_CI_RAW_ROOT (path, optional; default: <DATA_DIR>/raw)
+    - RUST_CI_RAW_ROOT (path, optional; default: <DATA_DIR>/raw)
+    - RUST_CI_DB_DSN (Postgres DSN, optional; when set enables DB storage)
     """
 
     token = os.getenv("GITHUB_TOKEN")
@@ -110,8 +123,16 @@ def load_config_from_env() -> AppConfig:
         raw_data_root=raw_data_root,
     )
 
+    db_dsn = os.getenv("RUST_CI_DB_DSN") or None
+    db_cfg: Optional[DatabaseConfig]
+    if db_dsn:
+        db_cfg = DatabaseConfig(dsn=db_dsn)
+    else:
+        db_cfg = None
+
     return AppConfig(
         github_token=token,
         search=search,
         storage=storage,
+        db=db_cfg,
     )

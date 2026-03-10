@@ -1,4 +1,15 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rustci
+      POSTGRES_PASSWORD: rustci
+      POSTGRES_DB: rustci
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
   collector:
     build:
       context: .
@@ -6,8 +17,15 @@ services:
     image: rust-ci-collector:latest
     env_file:
       - .env
+    environment:
+      - RUST_CI_DB_DSN=postgresql://rustci:rustci@db:5432/rustci
     volumes:
       - ./data:/data
+    depends_on:
+      - db
     # By default this runs `python -m collector` from the Dockerfile
     # You can override or add arguments, e.g.:
     # command: ["--limit", "10", "--resume"]
+
+volumes:
+  pgdata:

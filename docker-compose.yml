@@ -27,5 +27,17 @@ services:
     # You can override or add arguments, e.g.:
     # command: ["--limit", "10", "--resume"]
 
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    image: rust-ci-ui:latest
+    environment:
+      - RUST_CI_DB_DSN=postgresql://rustci:rustci@db:5432/rustci
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+
 volumes:
   pgdata:

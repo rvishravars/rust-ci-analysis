@@ -61,6 +61,64 @@ This will:
 - Write a JSONL repo list to `/data/repos.jsonl` in the container (mapped to `./data/repos.jsonl` on the host).
 - For each repository, download and store raw JSON/JSONL under `/data/raw/github/<owner>/<repo>/` (mapped under `./data/raw/...`).
 
+## Optional: Postgres storage and resume state
+
+For larger runs it is often more practical to store raw GitHub data and per-
+repository collection state in a local Postgres database instead of only
+JSONL files on disk.
+
+This repository includes a lightweight Postgres setup and wiring for the
+collector.
+
+1. Start Postgres and build the collector image:
+
+   ```bash
+   docker compose up -d db
+   docker compose build collector
+   ```
+
+2. Ensure your `.env` file contains at least:
+
+   ```bash
+   GITHUB_TOKEN=your_token_here
+   ```
+
+   The collector also uses the following environment variables (all optional):
+
+   - `RUST_CI_DATA_DIR` (default: `./data`)
+   - `RUST_CI_REPOS_LIST` (default: `<DATA_DIR>/repos.jsonl`)
+   - `RUST_CI_RAW_ROOT` (default: `<DATA_DIR>/raw`)
+
+   The `docker-compose.yml` file already sets `RUST_CI_DB_DSN` so the collector
+   talks to the Postgres service.
+
+3. Run the collector with Postgres-backed resume tracking:
+
+   Once the database is populated, you can run the collector as usual, and
+   `--resume` will skip repositories already marked as completed in the DB:
+
+   ```bash
+   docker compose run --rm collector --limit 10 --resume
+   ```
+
+    When Postgres is configured via `RUST_CI_DB_DSN`, the collector will:
+
+    - Seed the `repos` table from the discovered repository list
+       (`repos.jsonl`), so all candidate repositories are visible in the
+       database even before raw data collection runs.
+    - Stream new data directly into Postgres instead of writing large JSONL
+       files for commits, issues, and workflow runs (while still writing small
+       JSON summary files locally).
+    - Use the `repo_collection_state` table to avoid re-processing repositories
+       that have already been collected successfully.
+    - Perform batched inserts into `commits`, `issues`, `workflows`, and
+       `workflow_runs` tables using a single DB connection per repository to
+       keep large imports efficient.
+
+    The legacy `collector.import_existing` helper is now deprecated; start new
+    runs directly via the main collector instead of backfilling from existing
+    JSON files.
+
 ## What Gets Collected (Raw Only)
 
 For each repository, the collector stores **raw** data only (no analysis):

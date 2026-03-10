@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Rust CI Stats</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: #0f172a;
+        color: #e5e7eb;
+      }
+      header {
+        padding: 1.5rem 2rem;
+        background: linear-gradient(90deg, #1d4ed8, #6366f1);
+        color: white;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 1.5rem;
+      }
+      main {
+        padding: 1.5rem 2rem 3rem;
+      }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 1rem;
+        margin-bottom: 2rem;
+      }
+      .card {
+        background-color: #020617;
+        border-radius: 0.75rem;
+        padding: 1rem 1.25rem;
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.9);
+        border: 1px solid #1e293b;
+      }
+      .card h2 {
+        margin: 0 0 0.5rem;
+        font-size: 0.9rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b;
+      }
+      .card .value {
+        font-size: 1.6rem;
+        font-weight: 600;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+        background-color: #020617;
+        border-radius: 0.75rem;
+        overflow: hidden;
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.9);
+        border: 1px solid #1e293b;
+      }
+      thead {
+        background-color: #020617;
+      }
+      th,
+      td {
+        padding: 0.6rem 0.8rem;
+        text-align: left;
+        font-size: 0.85rem;
+        border-bottom: 1px solid #1e293b;
+      }
+      th {
+        font-weight: 600;
+        color: #94a3b8;
+        white-space: nowrap;
+      }
+      tbody tr:nth-child(even) {
+        background-color: #020617;
+      }
+      tbody tr:nth-child(odd) {
+        background-color: #020617;
+      }
+      tbody tr:hover {
+        background-color: #0b1120;
+      }
+      .status-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.15rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .status-completed {
+        background-color: rgba(34, 197, 94, 0.15);
+        color: #4ade80;
+      }
+      .status-in_progress {
+        background-color: rgba(59, 130, 246, 0.15);
+        color: #60a5fa;
+      }
+      .status-unknown {
+        background-color: rgba(148, 163, 184, 0.15);
+        color: #cbd5f5;
+      }
+      .repo-full-name {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+        font-size: 0.8rem;
+        color: #e5e7eb;
+      }
+      .repo-owner {
+        color: #9ca3af;
+      }
+      .repo-link a {
+        color: #60a5fa;
+        text-decoration: none;
+      }
+      .repo-link a:hover {
+        text-decoration: underline;
+      }
+      .counts {
+        font-variant-numeric: tabular-nums;
+      }
+      @media (max-width: 768px) {
+        header,
+        main {
+          padding: 1rem 1.25rem;
+        }
+        th:nth-child(1),
+        td:nth-child(1) {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Rust CI Stats</h1>
+      <p style="margin-top: 0.3rem; font-size: 0.85rem; opacity: 0.9;">
+        Overview of collected GitHub data from the Rust CI study.
+      </p>
+    </header>
+    <main>
+      <section class="stats-grid">
+        <div class="card">
+          <h2>Repositories</h2>
+          <div class="value">{{ repos_count }}</div>
+        </div>
+        <div class="card">
+          <h2>Commits</h2>
+          <div class="value counts">{{ commits_count }}</div>
+        </div>
+        <div class="card">
+          <h2>Issues &amp; PRs</h2>
+          <div class="value counts">{{ issues_count }}</div>
+        </div>
+        <div class="card">
+          <h2>Workflows</h2>
+          <div class="value counts">{{ workflows_count }}</div>
+        </div>
+        <div class="card">
+          <h2>Workflow Runs</h2>
+          <div class="value counts">{{ runs_count }}</div>
+        </div>
+      </section>
+
+      <section>
+        <h2 style="font-size: 1rem; margin-bottom: 0.6rem;">Per-repository summary</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Owner</th>
+              <th>Repository</th>
+              <th>Status</th>
+              <th>Commits</th>
+              <th>Issues</th>
+              <th>Workflows</th>
+              <th>Runs</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for repo in repos %}
+            <tr>
+              <td class="counts">{{ repo.id }}</td>
+              <td class="repo-owner">{{ repo.owner }}</td>
+              <td class="repo-link">
+                <div class="repo-full-name">
+                  {% if repo.full_name %}
+                  <a
+                    href="https://github.com/{{ repo.full_name }}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >{{ repo.full_name }}</a
+                  >
+                  {% else %}
+                  {{ repo.owner }}/{{ repo.name }}
+                  {% endif %}
+                </div>
+              </td>
+              <td>
+                {% set status_class = 'status-' + repo.status %}
+                <span class="status-chip {{ status_class }}">
+                  {{ repo.status }}
+                </span>
+              </td>
+              <td class="counts">{{ repo.commit_count }}</td>
+              <td class="counts">{{ repo.issue_count }}</td>
+              <td class="counts">{{ repo.workflow_count }}</td>
+              <td class="counts">{{ repo.run_count }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

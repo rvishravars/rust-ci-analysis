@@ -147,6 +147,15 @@ class DatabaseWriter:
         finally:
             conn.close()
 
+    def upsert_repo_metadata(self, repo_record: Dict[str, Any]) -> int:
+        """Insert or update a repository row based on a minimal record.
+
+        This is used when seeding the ``repos`` table from the discovery
+        phase (repos.jsonl) before any per-repo collection has run.
+        """
+
+        return self._get_or_create_repo(repo_record)
+
     def is_repo_completed(self, full_name: str) -> bool:
         conn = self._connect()
         try:

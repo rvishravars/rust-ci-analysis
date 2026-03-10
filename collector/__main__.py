@@ -47,6 +47,28 @@ def main(argv: list[str] | None = None) -> int:
     repos_path = discover_repositories(cfg, overwrite=args.overwrite_repos_list)
     print(f"[collector] Repository list written to: {repos_path}", flush=True)
 
+    # Optionally seed the repos table from the discovered list so that
+    # all candidate repositories are visible in the database, even before
+    # raw data collection has run.
+    if db_writer is not None:
+        seeded = 0
+        for repo in load_repo_list(Path(repos_path)):
+            owner = repo.get("owner")
+            name = repo.get("name")
+            if not owner or not name:
+                continue
+            try:
+                db_writer.upsert_repo_metadata(repo)
+                seeded += 1
+            except Exception:
+                # Keep seeding best-effort; detailed errors can be inspected
+                # via DB logs if needed.
+                continue
+        print(
+            f"[collector] Seeded {seeded} repositories into the database from repos list.",
+            flush=True,
+        )
+
     # Iterate over repositories and collect raw data.
     count = 0
     for repo in load_repo_list(Path(repos_path)):

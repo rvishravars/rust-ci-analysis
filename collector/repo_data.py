@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+import psycopg2
+from psycopg2.extras import Json, execute_batch
 import requests
 
 from .config import AppConfig
@@ -37,7 +39,17 @@ def _iter_commits(client: GitHubClient, full_name: str) -> Iterable[Dict[str, An
 
     while True:
         params = {"per_page": per_page, "page": page}
-        response = client.get(path, params=params)
+        try:
+            response = client.get(path, params=params)
+        except requests.HTTPError as exc:  # type: ignore[attribute-defined-outside-init]
+            status_code = getattr(exc.response, "status_code", None)
+            # For very deep pagination GitHub may intermittently return 5xx
+            # errors. Once we've successfully read at least one page, treat
+            # repeated server-side failures as the natural end of the
+            # available history instead of failing the whole run.
+            if status_code is not None and 500 <= status_code < 600 and page > 1:
+                break
+            raise
         page_items = response.json() or []
         if not page_items:
             break
@@ -149,9 +161,14 @@ def collect_repo_raw_data(
     # When a database writer is configured, ensure the repo exists there and
     # clear any previous data so we can safely re-run collection.
     repo_db_id: Optional[int] = None
+    conn: Optional[psycopg2.extensions.connection] = None
+    cur: Optional[psycopg2.extensions.cursor] = None
     if db is not None:
         repo_db_id = db.mark_repo_started(repo_record)
         db.clear_repo_data(repo_db_id)
+        conn = psycopg2.connect(db.dsn)
+        conn.autocommit = True
+        cur = conn.cursor()
 
     # Languages breakdown.
     languages_resp = client.get(f"/repos/{full_name}/languages")
@@ -159,16 +176,48 @@ def collect_repo_raw_data(
     _write_json(repo_dir / "languages.json", languages_data)
 
     # Commit history (for later velocity and CI-adoption analysis).
-    if db is not None and repo_db_id is not None:
+    if db is not None and repo_db_id is not None and cur is not None:
+        commit_rows = []
         for commit in _iter_commits(client, full_name):
-            db.insert_commit(repo_db_id, commit)
+            commit_rows.append((repo_db_id, commit.get("sha"), Json(commit)))
+            if len(commit_rows) >= 500:
+                execute_batch(
+                    cur,
+                    "INSERT INTO commits (repo_id, sha, data) VALUES (%s, %s, %s)",
+                    commit_rows,
+                    page_size=500,
+                )
+                commit_rows.clear()
+        if commit_rows:
+            execute_batch(
+                cur,
+                "INSERT INTO commits (repo_id, sha, data) VALUES (%s, %s, %s)",
+                commit_rows,
+                page_size=500,
+            )
     else:
         _write_jsonl(repo_dir / "commits.jsonl", _iter_commits(client, full_name))
 
     # Issues and pull requests (for later bug/defect metrics).
-    if db is not None and repo_db_id is not None:
+    if db is not None and repo_db_id is not None and cur is not None:
+        issue_rows = []
         for issue in _iter_issues(client, full_name):
-            db.insert_issue(repo_db_id, issue)
+            issue_rows.append((repo_db_id, issue.get("number"), Json(issue)))
+            if len(issue_rows) >= 500:
+                execute_batch(
+                    cur,
+                    "INSERT INTO issues (repo_id, number, data) VALUES (%s, %s, %s)",
+                    issue_rows,
+                    page_size=500,
+                )
+                issue_rows.clear()
+        if issue_rows:
+            execute_batch(
+                cur,
+                "INSERT INTO issues (repo_id, number, data) VALUES (%s, %s, %s)",
+                issue_rows,
+                page_size=500,
+            )
     else:
         _write_jsonl(repo_dir / "issues.jsonl", _iter_issues(client, full_name))
 
@@ -177,19 +226,48 @@ def collect_repo_raw_data(
     workflows_data = workflows_resp.json()
     _write_json(repo_dir / "workflows.json", workflows_data)
 
-    if db is not None and repo_db_id is not None:
+    if db is not None and repo_db_id is not None and cur is not None:
+        workflow_rows = []
         for wf in workflows_data.get("workflows") or []:
-            db.insert_workflow(repo_db_id, wf)
+            workflow_rows.append((repo_db_id, wf.get("id"), Json(wf)))
+        if workflow_rows:
+            execute_batch(
+                cur,
+                "INSERT INTO workflows (repo_id, workflow_id, data) VALUES (%s, %s, %s)",
+                workflow_rows,
+                page_size=200,
+            )
 
     # CI execution metadata: workflow runs.
-    if db is not None and repo_db_id is not None:
+    if db is not None and repo_db_id is not None and cur is not None:
+        run_rows = []
         for run in _iter_workflow_runs(client, full_name):
-            db.insert_workflow_run(repo_db_id, run)
+            run_rows.append((repo_db_id, run.get("id"), Json(run)))
+            if len(run_rows) >= 500:
+                execute_batch(
+                    cur,
+                    "INSERT INTO workflow_runs (repo_id, run_id, data) VALUES (%s, %s, %s)",
+                    run_rows,
+                    page_size=500,
+                )
+                run_rows.clear()
+        if run_rows:
+            execute_batch(
+                cur,
+                "INSERT INTO workflow_runs (repo_id, run_id, data) VALUES (%s, %s, %s)",
+                run_rows,
+                page_size=500,
+            )
     else:
         _write_jsonl(
             repo_dir / "workflow_runs.jsonl",
             _iter_workflow_runs(client, full_name),
         )
+
+    if cur is not None:
+        cur.close()
+    if conn is not None:
+        conn.close()
 
     return repo_dir
 

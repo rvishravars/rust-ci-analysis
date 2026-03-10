@@ -1,0 +1,10 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Ignore the publication file
+Rust_CI_for_Publication.pdf
+
+# Ignore large data
+data/data/raw/github/rust-lang/rust/commits.jsonl
